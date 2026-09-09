@@ -1,0 +1,55 @@
+name: Snoopy
+options:
+  bundleIdPrefix: dev.snoopy
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+packages:
+  SnoopyCore:
+    path: Packages/SnoopyCore
+targets:
+  Snoopy:
+    type: application
+    platform: macOS
+    sources:
+      - path: Snoopy
+        excludes: ["Info.plist"]
+    dependencies:
+      - package: SnoopyCore
+        product: SnoopyCore
+      - package: SnoopyCore
+        product: SnoopyIPC
+    info:
+      path: Snoopy/Info.plist
+      properties:
+        CFBundleName: Snoopy
+        CFBundleDisplayName: Snoopy
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: "MIT License"
+        NSPrincipalClass: NSApplication
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.snoopy.Snoopy
+        PRODUCT_NAME: Snoopy
+        SWIFT_VERSION: "5.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        SWIFT_STRICT_CONCURRENCY: minimal
+        GENERATE_INFOPLIST_FILE: NO
+    postCompileScripts:
+      - name: Build and embed SnoopyHook dylib
+        script: |
+          "$SRCROOT/Scripts/build-hook.sh" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+        outputFiles:
+          - "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/libSnoopyHook.dylib"
+    scheme:
+      testTargets: []

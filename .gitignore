@@ -1,0 +1,16 @@
+.DS_Store
+build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+!Packages/**/Package.swift
+.swiftpm/
+.build/
+xcuserdata/
+*.pem
+*.key
+*.der
+*.srl
+spikes/**/*.dylib
+spikes/**/simapp
+spikes/**/tlsapp*

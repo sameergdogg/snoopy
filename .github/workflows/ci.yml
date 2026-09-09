@@ -1,0 +1,21 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
+      - name: Unit tests (SnoopyCore + SnoopyIPC)
+        run: swift test --package-path Packages/SnoopyCore
+      - name: Build the hook dylib
+        run: ./Scripts/build-hook.sh
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build the app
+        run: xcodebuild -project Snoopy.xcodeproj -scheme Snoopy -configuration Debug -destination 'platform=macOS' build
