@@ -28,5 +28,7 @@
 	<string>MIT License</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SnoopyReleaseChannel</key>
+	<string>0.1.0-rc.1</string>
 </dict>
 </plist>

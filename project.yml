@@ -27,6 +27,7 @@ targets:
         CFBundleDisplayName: Snoopy
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
+        SnoopyReleaseChannel: "0.1.0-rc.1"
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "MIT License"
