@@ -138,6 +138,8 @@ private struct BodySection: View {
 
                 if kind == .image, mode == 0, let img = NSImage(data: decoded) {
                     Image(nsImage: img).resizable().scaledToFit().frame(maxHeight: 320)
+                } else if kind == .json, mode == 0, let node = JSONNode.parse(decoded) {
+                    JSONTreeView(root: node).frame(minHeight: 120, maxHeight: 460)
                 } else {
                     Text(bodyText).font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)

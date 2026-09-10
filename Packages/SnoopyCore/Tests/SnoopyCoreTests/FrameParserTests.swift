@@ -60,3 +60,40 @@ final class BodyFormatterTests: XCTestCase {
         XCTAssertEqual((log["entries"] as! [[String: Any]]).count, 1)
     }
 }
+
+final class JSONNodeTests: XCTestCase {
+    let sample = Data("""
+    {"user":{"name":"sameer","admin":true,"streak":42},"items":[{"id":1},{"id":2}],"note":null}
+    """.utf8)
+
+    func testParseShape() {
+        let root = JSONNode.parse(sample)!
+        XCTAssertEqual(root.kind, .object)
+        XCTAssertEqual(root.children?.count, 3)   // user, items, note (sorted keys)
+        let user = root.children!.first { $0.key == "user" }!
+        XCTAssertEqual(user.kind, .object)
+        let admin = user.children!.first { $0.key == "admin" }!
+        XCTAssertEqual(admin.kind, .bool); XCTAssertEqual(admin.scalarText, "true")
+        let streak = user.children!.first { $0.key == "streak" }!
+        XCTAssertEqual(streak.kind, .number); XCTAssertEqual(streak.scalarText, "42")
+        let items = root.children!.first { $0.key == "items" }!
+        XCTAssertEqual(items.kind, .array); XCTAssertEqual(items.children?.count, 2)
+        XCTAssertEqual(items.children?.first?.indexLabel, "[0]")
+        let note = root.children!.first { $0.key == "note" }!
+        XCTAssertEqual(note.kind, .null)
+    }
+
+    func testSearchMatchesAndAncestors() {
+        let root = JSONNode.parse(sample)!
+        let (matches, ancestors) = root.search("sameer")
+        XCTAssertTrue(matches.contains("$.user.name"))
+        XCTAssertTrue(ancestors.contains("$.user"))   // parent auto-expands
+        XCTAssertTrue(ancestors.contains("$"))
+        // key search
+        let (m2, _) = root.search("streak")
+        XCTAssertTrue(m2.contains("$.user.streak"))
+        // number search
+        let (m3, _) = root.search("42")
+        XCTAssertTrue(m3.contains("$.user.streak"))
+    }
+}
