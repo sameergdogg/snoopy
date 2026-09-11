@@ -59,9 +59,15 @@ final class SocketServer {
         while running {
             let n = read(fd, buf, bufSize)
             if n <= 0 { break }
-            let chunk = Data(bytes: buf, count: n)
-            for obj in parser.append(chunk) {
-                if let event = HookEventDecoder.decode(obj) { onEvent?(event) }
+            // This loop never returns, so the pool GCD installs around the block never
+            // drains. `JSONSerialization` hands back autoreleased NSString/NSData — for a
+            // capture with large bodies that accumulates gigabytes of reachable-but-dead
+            // memory, which reads as a runaway leak and pushes the machine into swap.
+            autoreleasepool {
+                let chunk = Data(bytes: buf, count: n)
+                for obj in parser.append(chunk) {
+                    if let event = HookEventDecoder.decode(obj) { onEvent?(event) }
+                }
             }
         }
     }

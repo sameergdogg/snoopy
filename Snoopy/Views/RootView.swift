@@ -5,16 +5,15 @@ struct RootView: View {
     @EnvironmentObject var controller: AppController
     @EnvironmentObject var store: CaptureStore
     @State private var selection: Exchange.ID?
-    @State private var filterText = ""
 
     var body: some View {
         NavigationSplitView {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 340)
         } detail: {
-            VSplit(selection: $selection, filterText: $filterText)
+            VSplit(selection: $selection)
         }
-        .toolbar { ToolbarView(filterText: $filterText) }
+        .toolbar { ToolbarView() }
         .alert("Snoopy", isPresented: Binding(get: { controller.lastError != nil },
                                               set: { if !$0 { controller.lastError = nil } })) {
             Button("OK", role: .cancel) { controller.lastError = nil }
@@ -22,32 +21,29 @@ struct RootView: View {
     }
 }
 
-/// Vertical split: request list on top, detail below.
+/// Timeline on top, then a vertical split: request list above, detail below.
 private struct VSplit: View {
     @Binding var selection: Exchange.ID?
-    @Binding var filterText: String
     @EnvironmentObject var store: CaptureStore
 
-    var filtered: [Exchange] {
-        let base = store.exchanges
-        guard !filterText.isEmpty else { return base }
-        let q = filterText.lowercased()
-        return base.filter { $0.urlString.lowercased().contains(q) || $0.method.lowercased().contains(q)
-            || String($0.status ?? 0).contains(q) || $0.host.lowercased().contains(q) }
-    }
-
     var body: some View {
-        VSplitView {
-            RequestListView(exchanges: filtered, selection: $selection)
-                .frame(minHeight: 180)
-            Group {
-                if let id = selection, let ex = store.exchanges.first(where: { $0.id == id }) {
-                    DetailView(exchange: ex)
-                } else {
-                    ContentUnavailablePlaceholder()
+        VStack(spacing: 0) {
+            TimelineStrip()
+            Divider()
+            VSplitView {
+                RequestListView(exchanges: store.visible, selection: $selection)
+                    .frame(minHeight: 180)
+                Group {
+                    // O(1) via the store's id index; this used to be a linear scan of the
+                    // whole history on every render.
+                    if let id = selection, let ex = store.exchange(id: id) {
+                        DetailView(exchange: ex)
+                    } else {
+                        ContentUnavailablePlaceholder()
+                    }
                 }
+                .frame(minHeight: 200)
             }
-            .frame(minHeight: 200)
         }
     }
 }

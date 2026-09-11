@@ -2,9 +2,29 @@
 #import "SNPTransport.h"
 #import <objc/runtime.h>
 
-static const NSUInteger kSNPMaxRequestBody = 4 * 1024 * 1024;
-static const NSUInteger kSNPMaxResponseBody = 8 * 1024 * 1024;
 static const void *kSNPRecordKey = &kSNPRecordKey;
+
+/// Body capture caps. Generous by default so payloads stay inspectable; Snoopy bounds its
+/// own memory by reaping old bodies rather than by capturing less. Override with
+/// SNOOPY_MAX_REQUEST_BODY / SNOOPY_MAX_RESPONSE_BODY (bytes) for pathologically chatty apps.
+static NSUInteger SNPCapFromEnv(const char *name, NSUInteger fallback) {
+    const char *v = getenv(name);
+    if (!v || !*v) return fallback;
+    long long parsed = atoll(v);
+    return parsed > 0 ? (NSUInteger)parsed : fallback;
+}
+
+static NSUInteger SNPMaxRequestBody(void) {
+    static NSUInteger cap; static dispatch_once_t once;
+    dispatch_once(&once, ^{ cap = SNPCapFromEnv("SNOOPY_MAX_REQUEST_BODY", 4 * 1024 * 1024); });
+    return cap;
+}
+
+static NSUInteger SNPMaxResponseBody(void) {
+    static NSUInteger cap; static dispatch_once_t once;
+    dispatch_once(&once, ^{ cap = SNPCapFromEnv("SNOOPY_MAX_RESPONSE_BODY", 8 * 1024 * 1024); });
+    return cap;
+}
 
 @implementation SNPRecord
 @end
@@ -70,7 +90,7 @@ void SNPSendRequest(NSURLSessionTask *task) {
     msg[@"headers"] = SNPHeaders(req.allHTTPHeaderFields);
     NSData *body = req.HTTPBody ?: r.uploadBody;
     if (body) {
-        SNPPutBody(msg, body, kSNPMaxRequestBody);
+        SNPPutBody(msg, body, SNPMaxRequestBody());
     } else if (req.HTTPBodyStream) {
         msg[@"bodyOmitted"] = @"stream";
     }
@@ -106,7 +126,7 @@ void SNPAppendResponseData(NSURLSessionTask *task, NSData *data) {
     if (!data.length) return;
     SNPRecord *r = SNPRecordForTask(task);
     @synchronized (r) {
-        if (r.responseBody.length < kSNPMaxResponseBody + 1) [r.responseBody appendData:data];
+        if (r.responseBody.length <= SNPMaxResponseBody()) [r.responseBody appendData:data];
     }
 }
 
@@ -154,7 +174,7 @@ void SNPSendComplete(NSURLSessionTask *task, NSURLResponse *response, NSData *bo
     msg[@"id"] = r.exchangeId;
     msg[@"t"] = @(SNPNow());
     SNPFillResponse(msg, response ?: task.response);
-    if (body) SNPPutBody(msg, body, kSNPMaxResponseBody);
+    if (body) SNPPutBody(msg, body, SNPMaxResponseBody());
     if (error) {
         msg[@"error"] = @{ @"domain": error.domain ?: @"", @"code": @(error.code),
                            @"message": error.localizedDescription ?: @"" };

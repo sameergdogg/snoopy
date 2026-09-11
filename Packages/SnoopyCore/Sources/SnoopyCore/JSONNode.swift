@@ -28,22 +28,35 @@ public struct JSONNode: Identifiable, Sendable, Hashable {
 
     // MARK: Parsing
 
-    public static func parse(_ data: Data) -> JSONNode? {
+    private struct BudgetExceeded: Error {}
+
+    /// Builds the tree, or returns nil if the document is unparseable or exceeds `nodeBudget`.
+    /// Every node allocates a path string and a struct, so an unbounded document can cost
+    /// hundreds of megabytes and seconds of CPU; callers fall back to a text view instead.
+    public static func parse(_ data: Data, nodeBudget: Int = .max) -> JSONNode? {
         guard let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) else { return nil }
-        return node(from: obj, key: nil, indexLabel: nil, path: "$")
+        var budget = nodeBudget
+        return try? node(from: obj, key: nil, indexLabel: nil, path: "$", budget: &budget)
     }
 
-    private static func node(from value: Any, key: String?, indexLabel: String?, path: String) -> JSONNode {
+    private static func node(from value: Any, key: String?, indexLabel: String?, path: String,
+                             budget: inout Int) throws -> JSONNode {
+        budget -= 1
+        if budget < 0 { throw BudgetExceeded() }
         switch value {
         case let dict as [String: Any]:
-            let kids = dict.keys.sorted().map { k in
-                node(from: dict[k]!, key: k, indexLabel: nil, path: "\(path).\(k)")
+            var kids: [JSONNode] = []
+            kids.reserveCapacity(dict.count)
+            for k in dict.keys.sorted() {
+                kids.append(try node(from: dict[k]!, key: k, indexLabel: nil, path: "\(path).\(k)", budget: &budget))
             }
             return JSONNode(id: path, key: key, indexLabel: indexLabel, kind: .object,
                             scalarText: "", rawScalar: "", children: kids)
         case let arr as [Any]:
-            let kids = arr.enumerated().map { i, v in
-                node(from: v, key: nil, indexLabel: "[\(i)]", path: "\(path)[\(i)]")
+            var kids: [JSONNode] = []
+            kids.reserveCapacity(arr.count)
+            for (i, v) in arr.enumerated() {
+                kids.append(try node(from: v, key: nil, indexLabel: "[\(i)]", path: "\(path)[\(i)]", budget: &budget))
             }
             return JSONNode(id: path, key: key, indexLabel: indexLabel, kind: .array,
                             scalarText: "", rawScalar: "", children: kids)
@@ -78,11 +91,13 @@ public struct JSONNode: Identifiable, Sendable, Hashable {
     // MARK: Search
 
     /// True if this node's key or scalar contains `q` (case-insensitive).
+    ///
+    /// Uses a case-insensitive range search rather than `lowercased().contains()`: the latter
+    /// allocates a fresh String for the query *and* the haystack at every node visited.
     public func selfMatches(_ q: String) -> Bool {
         guard !q.isEmpty else { return false }
-        let lq = q.lowercased()
-        if let key, key.lowercased().contains(lq) { return true }
-        if !isContainer, rawScalar.lowercased().contains(lq) { return true }
+        if let key, key.range(of: q, options: .caseInsensitive) != nil { return true }
+        if !isContainer, rawScalar.range(of: q, options: .caseInsensitive) != nil { return true }
         return false
     }
 
@@ -90,6 +105,7 @@ public struct JSONNode: Identifiable, Sendable, Hashable {
     /// Returns (matchIds, ancestorIds).
     public func search(_ q: String) -> (matches: Set<String>, ancestors: Set<String>) {
         var matches = Set<String>(), ancestors = Set<String>()
+        guard !q.isEmpty else { return (matches, ancestors) }
         _ = collect(q, into: &matches, ancestors: &ancestors)
         return (matches, ancestors)
     }

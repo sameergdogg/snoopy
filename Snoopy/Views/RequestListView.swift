@@ -8,6 +8,11 @@ struct RequestListView: View {
     var body: some View {
         Table(exchanges, selection: $selection) {
             TableColumn("") { ex in StatusDot(exchange: ex) }.width(18)
+            TableColumn("Time") { ex in
+                // Preformatted at capture time; formatting per render is far too slow here.
+                Text(ex.startedAtText).font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }.width(min: 82, ideal: 92, max: 110)
             TableColumn("Method") { ex in
                 Text(ex.method).font(.system(.body, design: .monospaced))
                     .foregroundStyle(methodColor(ex.method))
@@ -23,7 +28,7 @@ struct RequestListView: View {
                 Text(byteString(ex.responseBodySize ?? ex.responseBody?.count))
                     .foregroundStyle(.secondary).font(.callout)
             }.width(min: 56, ideal: 64, max: 90)
-            TableColumn("Time") { ex in
+            TableColumn("Duration") { ex in
                 Text(ex.duration.map { String(format: "%.0f ms", $0 * 1000) } ?? "—")
                     .foregroundStyle(.secondary).font(.callout)
             }.width(min: 56, ideal: 68, max: 100)

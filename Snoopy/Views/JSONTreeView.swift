@@ -3,6 +3,10 @@ import SnoopyCore
 
 /// Interactive JSON viewer: collapsible objects/arrays, live search with highlight,
 /// auto-expand to matches, and an optional filter that hides non-matching subtrees.
+///
+/// Search results and the flattened row list are cached in state and recomputed only when
+/// an input actually changes. Previously both were computed properties, and `search` was
+/// read from inside the row loop — so displaying N rows ran N full-tree searches.
 struct JSONTreeView: View {
     let root: JSONNode
     var initialQuery: String = ""
@@ -13,9 +17,11 @@ struct JSONTreeView: View {
     @State private var filterToMatches = false
     @State private var didInit = false
 
-    private var search: (matches: Set<String>, ancestors: Set<String>) {
-        query.isEmpty ? ([], []) : root.search(query)
-    }
+    @State private var matches: Set<String> = []
+    @State private var ancestors: Set<String> = []
+    @State private var rows: [Row] = []
+
+    struct Row: Identifiable { let node: JSONNode; let depth: Int; var id: String { node.id } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -23,11 +29,11 @@ struct JSONTreeView: View {
             Divider()
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(visibleRows(), id: \.node.id) { item in
+                    ForEach(rows) { item in
                         JSONRow(node: item.node, depth: item.depth,
                                 isExpanded: isExpanded(item.node),
                                 query: query,
-                                isMatch: search.matches.contains(item.node.id),
+                                isMatch: matches.contains(item.node.id),
                                 toggle: { toggle(item.node) })
                     }
                 }
@@ -35,39 +41,61 @@ struct JSONTreeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .onAppear { if !didInit { if !initialQuery.isEmpty { query = initialQuery; autoExpandForSearch() }; expandTopLevels(); didInit = true } }
-        .onChange(of: query) { _, _ in autoExpandForSearch() }
+        .onAppear {
+            guard !didInit else { return }
+            didInit = true
+            if !initialQuery.isEmpty { query = initialQuery }
+            expandTopLevels()
+            runSearch()
+        }
+        .onChange(of: root.id) { _, _ in
+            expanded.removeAll(); collapsedByUser.removeAll()
+            expandTopLevels(); runSearch()
+        }
+        .onChange(of: query) { _, _ in runSearch() }
+        .onChange(of: filterToMatches) { _, _ in rebuildRows() }
     }
 
     private var controls: some View {
-        let s = search
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
             TextField("Search keys and values", text: $query)
                 .textFieldStyle(.plain).font(.system(.caption, design: .monospaced))
             if !query.isEmpty {
-                Text("\(s.matches.count)").font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                Text("\(matches.count)").font(.caption2).foregroundStyle(.secondary).monospacedDigit()
                 Toggle("Filter", isOn: $filterToMatches).toggleStyle(.button).controlSize(.mini)
                 Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Expand all") { expandAll(root); collapsedByUser.removeAll() }.buttonStyle(.borderless).font(.caption2)
-            Button("Collapse all") { expanded.removeAll(); collapsedByUser.removeAll() }.buttonStyle(.borderless).font(.caption2)
+            Button("Expand all") { expandAll(root); collapsedByUser.removeAll(); rebuildRows() }
+                .buttonStyle(.borderless).font(.caption2)
+            Button("Collapse all") { expanded.removeAll(); collapsedByUser.removeAll(); rebuildRows() }
+                .buttonStyle(.borderless).font(.caption2)
         }
         .padding(.horizontal, 4)
     }
 
-    // MARK: rows (flattened to avoid self-recursive opaque View types)
+    // MARK: Derived state
 
-    private struct Row { let node: JSONNode; let depth: Int }
+    private func runSearch() {
+        if query.isEmpty {
+            matches = []; ancestors = []
+        } else {
+            let r = root.search(query)
+            matches = r.matches
+            ancestors = r.ancestors
+            expanded.formUnion(r.ancestors)   // auto-expand to matches
+        }
+        rebuildRows()
+    }
 
-    private func visibleRows() -> [Row] {
+    /// Flattens the visible part of the tree once, instead of on every body evaluation.
+    private func rebuildRows() {
         var out: [Row] = []
-        let s = search
         func walk(_ node: JSONNode, _ depth: Int) {
             let shown = !filterToMatches || query.isEmpty
-                || s.matches.contains(node.id) || s.ancestors.contains(node.id)
+                || matches.contains(node.id) || ancestors.contains(node.id)
             guard shown else { return }
             out.append(Row(node: node, depth: depth))
             if node.isContainer, isExpanded(node) {
@@ -75,20 +103,21 @@ struct JSONTreeView: View {
             }
         }
         walk(root, 0)
-        return out
+        rows = out
     }
 
     // MARK: expansion state
 
     private func isExpanded(_ node: JSONNode) -> Bool {
         guard node.isContainer else { return false }
-        if !query.isEmpty, search.ancestors.contains(node.id), !collapsedByUser.contains(node.id) { return true }
+        if !query.isEmpty, ancestors.contains(node.id), !collapsedByUser.contains(node.id) { return true }
         return expanded.contains(node.id)
     }
     private func toggle(_ node: JSONNode) {
         guard node.isContainer else { return }
         if isExpanded(node) { expanded.remove(node.id); collapsedByUser.insert(node.id) }
         else { expanded.insert(node.id); collapsedByUser.remove(node.id) }
+        rebuildRows()
     }
     private func expandTopLevels() {
         expanded.insert(root.id)
@@ -97,10 +126,6 @@ struct JSONTreeView: View {
     private func expandAll(_ node: JSONNode) {
         if node.isContainer { expanded.insert(node.id) }
         for c in node.children ?? [] { expandAll(c) }
-    }
-    private func autoExpandForSearch() {
-        guard !query.isEmpty else { return }
-        expanded.formUnion(search.ancestors)
     }
 }
 
@@ -157,20 +182,19 @@ private struct JSONRow: View {
 
     @ViewBuilder
     private func highlighted(_ text: String, isKey: Bool) -> some View {
-        let base: Color = isKey ? .primary : .primary
-        if query.isEmpty || !text.lowercased().contains(query.lowercased()) {
-            Text(text).foregroundStyle(isKey ? Color.accentColor : base)
+        // Case-insensitive range search avoids allocating a lowercased copy of the query
+        // and of this row's text on every redraw.
+        if query.isEmpty || text.range(of: query, options: .caseInsensitive) == nil {
+            Text(text).foregroundStyle(isKey ? Color.accentColor : Color.primary)
         } else {
-            Text(attributed(text, query: query)).foregroundStyle(isKey ? Color.accentColor : base)
+            Text(attributed(text, query: query)).foregroundStyle(isKey ? Color.accentColor : Color.primary)
         }
     }
 
     private func attributed(_ text: String, query: String) -> AttributedString {
         var str = AttributedString(text)
-        let lower = text.lowercased(); let lq = query.lowercased()
-        var searchStart = lower.startIndex
-        while let r = lower.range(of: lq, range: searchStart..<lower.endIndex) {
-            // map String range to AttributedString range
+        var searchStart = text.startIndex
+        while let r = text.range(of: query, options: .caseInsensitive, range: searchStart..<text.endIndex) {
             let lo = text.distance(from: text.startIndex, to: r.lowerBound)
             let hi = text.distance(from: text.startIndex, to: r.upperBound)
             if let aLo = str.index(str.startIndex, offsetByCharacters: lo, limitedBy: str.endIndex),

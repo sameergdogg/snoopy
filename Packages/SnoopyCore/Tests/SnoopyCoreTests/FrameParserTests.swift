@@ -53,7 +53,7 @@ final class BodyFormatterTests: XCTestCase {
     }
     func testHARRoundTrips() throws {
         var e = Exchange(id: "1", method: "GET", urlString: "https://x.com/a?q=1")
-        e.status = 200; e.responseBody = Data("hi".utf8); e.completedAt = e.startedAt.addingTimeInterval(0.1)
+        e.setStatus(200); e.responseBody = Data("hi".utf8); e.completedAt = e.startedAt.addingTimeInterval(0.1)
         let har = try HARExport.data(from: [e])
         let obj = try JSONSerialization.jsonObject(with: har) as! [String: Any]
         let log = obj["log"] as! [String: Any]

@@ -106,10 +106,15 @@ static const NSUInteger kSNPMaxPending = 2000;
     [_pending addObject:frame];
 }
 
+/// Serialisation happens on the transport queue, not the caller's. `frameFor:` can be
+/// several megabytes of JSON for a large body, and the caller here is the target app's own
+/// delegate/completion thread — doing that work inline slows down the app being debugged.
 - (void)send:(NSDictionary *)message {
-    NSData *frame = [self frameFor:message];
-    if (!frame) return;
-    dispatch_async(_queue, ^{ [self writeFrameLocked:frame]; });
+    if (!message) return;
+    dispatch_async(_queue, ^{
+        NSData *frame = [self frameFor:message];
+        if (frame) [self writeFrameLocked:frame];
+    });
 }
 
 @end

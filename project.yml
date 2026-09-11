@@ -51,6 +51,15 @@ targets:
       - name: Build and embed SnoopyHook dylib
         script: |
           "$SRCROOT/Scripts/build-hook.sh" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+        # Without inputFiles Xcode sees only the declared output, treats the phase as
+        # up to date and silently ships a stale dylib after any hook edit.
+        inputFiles:
+          - "$(SRCROOT)/Scripts/build-hook.sh"
+          - "$(SRCROOT)/Hook/SNPHook.m"
+          - "$(SRCROOT)/Hook/SNPCapture.m"
+          - "$(SRCROOT)/Hook/SNPCapture.h"
+          - "$(SRCROOT)/Hook/SNPTransport.m"
+          - "$(SRCROOT)/Hook/SNPTransport.h"
         outputFiles:
           - "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/libSnoopyHook.dylib"
     scheme:
