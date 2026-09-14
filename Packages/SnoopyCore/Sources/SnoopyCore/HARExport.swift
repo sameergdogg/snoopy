@@ -2,11 +2,19 @@ import Foundation
 
 /// Exports exchanges to HAR 1.2 (http://www.softwareishard.com/blog/har-12-spec/).
 public enum HARExport {
+    /// The app's own version, for the HAR `creator` block. Read from the bundle rather
+    /// than written as a literal — the literal said 0.1.0 and would have kept saying it.
+    static var appVersion: String {
+        Bundle.main.infoDictionary?["SnoopyReleaseChannel"] as? String
+            ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? "unknown"
+    }
+
     public static func data(from exchanges: [Exchange], creator: String = "Snoopy") throws -> Data {
         let entries = exchanges.map { entry(for: $0) }
         let log: [String: Any] = [
             "version": "1.2",
-            "creator": ["name": creator, "version": "0.1.0"],
+            "creator": ["name": creator, "version": appVersion],
             "entries": entries,
         ]
         return try JSONSerialization.data(withJSONObject: ["log": log], options: [.prettyPrinted, .withoutEscapingSlashes])
