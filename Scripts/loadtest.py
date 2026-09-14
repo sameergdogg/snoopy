@@ -20,6 +20,20 @@ def frame(sock, obj):
     sock.sendall(struct.pack(">I", len(payload)) + payload)
 
 
+HEADER_STYLE = "pairs"
+
+
+def headers(pairs):
+    """Headers go over the wire as ordered [name, value] pairs so repeated fields survive.
+
+    A JSON object cannot represent two Set-Cookie headers, which is the case that matters.
+    The object form is still accepted by the app, and --legacy-headers exercises it.
+    """
+    if HEADER_STYLE == "object":
+        return {name: value for name, value in pairs}
+    return [[name, value] for name, value in pairs]
+
+
 def big_json_body(kb):
     """A payload shaped like a real API response, not incompressible noise."""
     items = []
@@ -37,7 +51,14 @@ def main():
     ap.add_argument("--count", type=int, default=5000, help="exchanges to send")
     ap.add_argument("--body-kb", type=int, default=32, help="approx response body size")
     ap.add_argument("--rate", type=float, default=500.0, help="exchanges per second (0 = as fast as possible)")
+    ap.add_argument("--legacy-headers", action="store_true",
+                    help="send headers as a JSON object (the pre-0.2 wire format) to exercise the compatibility path")
+    ap.add_argument("--huge", type=int, default=0, metavar="MB",
+                    help="also send one response of this size, to exercise the large-body viewer")
     args = ap.parse_args()
+
+    global HEADER_STYLE
+    HEADER_STYLE = "object" if args.legacy_headers else "pairs"
 
     path = args.socket
     if not path:
@@ -68,15 +89,20 @@ def main():
         frame(s, {"type": "request", "id": xid, "taskId": i, "t": now, "method":
                   random.choice(["GET", "GET", "GET", "POST", "PATCH"]),
                   "url": f"https://{host}{path_}",
-                  "headers": {"Accept": "application/json", "User-Agent": "Duolingo/7.5.0",
-                              "Authorization": "Bearer " + "x" * 180}})
+                  "headers": headers([("Accept", "application/json"),
+                                      ("User-Agent", "Duolingo/7.5.0"),
+                                      ("Authorization", "Bearer " + "x" * 180)])})
         frame(s, {"type": "response", "id": xid, "t": now + 0.01, "status":
                   random.choices([200, 200, 200, 204, 304, 404, 500], [60, 15, 10, 5, 5, 3, 2])[0],
                   "mimeType": "application/json",
-                  "headers": {"Content-Type": "application/json", "Server": "nginx"}})
+                  "headers": headers([("Content-Type", "application/json"),
+                                      ("Server", "nginx"),
+                                      # Two cookies: a JSON object could only carry one.
+                                      ("Set-Cookie", "sid=abc123; Path=/; HttpOnly"),
+                                      ("Set-Cookie", "csrf=z9y8; Path=/; Secure")])})
         frame(s, {"type": "complete", "id": xid, "t": now + 0.05, "status": 200,
                   "mimeType": "application/json",
-                  "headers": {"Content-Type": "application/json"},
+                  "headers": headers([("Content-Type", "application/json")]),
                   "body": bodies[bi], "bodySize": raw_sizes[bi], "bodyTruncated": False,
                   "metrics": {"fetchStart": now, "dnsStart": now, "dnsEnd": now + 0.002,
                               "connectStart": now + 0.002, "connectEnd": now + 0.01,
@@ -91,6 +117,24 @@ def main():
                 time.sleep(slack)
         if i and i % 1000 == 0:
             print(f"  {i} sent ({i / (time.time() - started):.0f}/s)", flush=True)
+
+    if args.huge:
+        # One deliberately awkward payload: hundreds of thousands of JSON values and,
+        # pretty-printed, well over a million lines. This is the shape that used to hand a
+        # single SwiftUI Text the whole document and freeze the window.
+        print(f"sending one ~{args.huge} MB JSON response…", flush=True)
+        xid = str(uuid.uuid4())
+        now = time.time()
+        body = big_json_body(args.huge * 1024)
+        frame(s, {"type": "request", "id": xid, "t": now, "method": "GET",
+                  "url": "https://api.duolingo.com/2017-06-30/huge-payload",
+                  "headers": headers([("Accept", "application/json")])})
+        frame(s, {"type": "complete", "id": xid, "t": now + 0.5, "status": 200,
+                  "mimeType": "application/json",
+                  "headers": headers([("Content-Type", "application/json")]),
+                  "body": base64.b64encode(body).decode(), "bodySize": len(body),
+                  "bodyTruncated": False})
+        print(f"  sent {len(body) / 1e6:.1f} MB", flush=True)
 
     elapsed = time.time() - started
     mb = sum(raw_sizes) / len(raw_sizes) * args.count / 1e6

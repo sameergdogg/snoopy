@@ -46,7 +46,7 @@ final class FrameParserTests: XCTestCase {
 final class BodyFormatterTests: XCTestCase {
     func testJSONKindAndPretty() {
         let d = Data(#"{"b":1,"a":2}"#.utf8)
-        XCTAssertEqual(BodyFormatter.kind(mimeType: "application/json", headers: [:], data: d), .json)
+        XCTAssertEqual(BodyFormatter.kind(mimeType: "application/json", headers: Headers(), data: d), .json)
         let pretty = BodyFormatter.prettyJSON(d)
         XCTAssertNotNil(pretty)
         XCTAssertTrue(pretty!.contains("\"a\" : 2"))
@@ -85,15 +85,40 @@ final class JSONNodeTests: XCTestCase {
 
     func testSearchMatchesAndAncestors() {
         let root = JSONNode.parse(sample)!
+        let user = root.children!.first { $0.key == "user" }!
+        let name = user.children!.first { $0.key == "name" }!
+        let streak = user.children!.first { $0.key == "streak" }!
+
         let (matches, ancestors) = root.search("sameer")
-        XCTAssertTrue(matches.contains("$.user.name"))
-        XCTAssertTrue(ancestors.contains("$.user"))   // parent auto-expands
-        XCTAssertTrue(ancestors.contains("$"))
+        XCTAssertTrue(matches.contains(name.id))
+        XCTAssertTrue(ancestors.contains(user.id))   // parent auto-expands
+        XCTAssertTrue(ancestors.contains(root.id))
         // key search
-        let (m2, _) = root.search("streak")
-        XCTAssertTrue(m2.contains("$.user.streak"))
+        XCTAssertTrue(root.search("streak").matches.contains(streak.id))
         // number search
-        let (m3, _) = root.search("42")
-        XCTAssertTrue(m3.contains("$.user.streak"))
+        XCTAssertTrue(root.search("42").matches.contains(streak.id))
+    }
+
+    /// Ids identify a node within one parse; paths are reconstructed only on demand.
+    func testPathsAreDerivedNotStored() {
+        let root = JSONNode.parse(sample)!
+        let items = root.children!.first { $0.key == "items" }!
+        let second = items.children![1]
+        let id = second.children!.first { $0.key == "id" }!
+        XCTAssertEqual(root.path(toID: id.id), "$.items[1].id")
+        XCTAssertEqual(root.path(toID: root.id), "$")
+        XCTAssertNil(root.path(toID: 9_999))
+    }
+
+    func testIdsArePreOrderAndUnique() {
+        let root = JSONNode.parse(sample)!
+        var seen = Set<Int>()
+        func walk(_ n: JSONNode) {
+            XCTAssertTrue(seen.insert(n.id).inserted, "node ids must be unique")
+            for c in n.children ?? [] { walk(c) }
+        }
+        walk(root)
+        XCTAssertEqual(root.id, 0, "root is first in pre-order")
+        XCTAssertEqual(seen.count, JSONNode.count(of: root))
     }
 }

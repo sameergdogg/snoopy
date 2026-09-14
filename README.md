@@ -12,7 +12,7 @@ needs no proxy and no CA. See [PLAN.md](PLAN.md) for the full roadmap.
 
 ## How it works
 
-1. You pick a booted simulator and an installed app, then press **Run with Snoopy**.
+1. You pick a booted simulator and an installed app, then press **Launch with Snoopy**.
 2. Snoopy relaunches the app with `libSnoopyHook.dylib` injected via
    `SIMCTL_CHILD_DYLD_INSERT_LIBRARIES`.
 3. The hook swizzles `URLSession` and streams every request/response over a Unix socket
@@ -37,10 +37,44 @@ SNOOPY_SOCKET         = /tmp/snoopy-<pid>.sock
 - Method, URL, wall-clock timestamp, request/response headers and bodies (JSON pretty-print, raw, hex, image preview)
 - Status, timing, and — for delegate-based sessions — DNS/connect/TLS/wait waterfall, protocol, remote IP
 - Covers completion-handler, delegate, `async`/`await`, and `URLSession.shared` paths (Alamofire, Get, etc.)
-- Live filter/search, pause, clear, copy-as-cURL, and HAR export
+- Live filter/search, record/pause, clear, copy-as-cURL, save/open sessions, and HAR export
+- Repeated headers (`Set-Cookie` especially) are kept separate and in wire order, not collapsed
 
 Not captured by the injection engine: `WKWebView`'s networking process and stacks that
 bypass `URLSession` (e.g. a custom NIO or C client). Those are the job of the proxy engine (M1.5).
+
+## Recording
+
+Snoopy starts recording as soon as it opens, so traffic from an app you launch is captured
+from its first request. The toolbar's left-hand control is both the indicator and the switch:
+
+| State | Means |
+|---|---|
+| **Waiting for app** | Recording, but nothing has attached yet |
+| **Recording** | At least one injected process is connected |
+| **Paused** | New requests are ignored |
+
+Press it (or **⌘R**) to pause and resume. Pausing stops *new* exchanges from being recorded;
+anything already in flight still updates to completion, so nothing is left stranded as
+pending. The status bar along the bottom names every attached process and its pid, so you
+can always tell whether the hook actually got in.
+
+While recording, the table shows the newest 2,000 matching rows — that bound exists only to
+keep AppKit's row animation cheap under a firehose. Pause, filter, or brush a time range and
+the full history becomes scrollable; the status bar says so and offers to show everything.
+
+## Searching
+
+The filter matches method, host, path, query and status. Toggle the magnifier beside it (or
+**Capture → Search Headers and Bodies**) to extend it to headers and textual bodies. That
+builds an index over what is captured, so it is off by default.
+
+## Sessions
+
+**⌘S** writes the whole capture — bodies, headers, timing, errors and all — to a `.snoopy`
+file, and **⌘O** reads one back. Use HAR export instead when another tool has to read it;
+HAR has nowhere to put an exchange's state, its error, or its truncation flags, so a session
+file is the lossless one.
 
 ## Timeline
 
@@ -57,14 +91,23 @@ A chatty app produces a lot of traffic, so Snoopy bounds what it holds:
 |---|---|---|
 | Rows retained | 10,000 | Oldest rows are dropped |
 | Body bytes retained | 256 MB | Oldest **bodies** are released; their rows and sizes stay |
-| Rows shown in the table | 1,000 | The table shows the newest matches; narrow with the filter or the timeline brush |
+| Rows shown in the table **while recording** | 2,000 | The table shows the newest matches; pause or filter to see all of them |
 
-All three are reported in the timeline header, so nothing disappears silently. Full history
-(within the row limit) still feeds the timeline, the filter and HAR export — the 1,000-row cap
-is a display limit only, and brushing an earlier time range shows the rows from that window.
+All three are reported in the status bar, so nothing disappears silently. Full history (within
+the row limit) still feeds the timeline, the filter and the exports — the 2,000-row cap is a
+live-display limit only, and it lifts entirely the moment you pause.
 
 If the app you're debugging sends very large bodies, you can lower what the hook captures with
 `SNOOPY_MAX_REQUEST_BODY` / `SNOOPY_MAX_RESPONSE_BODY` (bytes) in its environment.
+
+## Large bodies
+
+Response bodies are decoded off the main thread and rendered lazily, so the size of a payload
+costs only what is on screen. A JSON body becomes a collapsible tree with search; containers
+past 200 children page in on demand, so an array of 20,000 elements opens instantly. Past
+400,000 values it falls back to pretty-printed text, still chunked and still lazy, and says
+so. **Save Body** writes the exact decoded bytes to disk when a payload is better read
+elsewhere.
 
 ## Build
 

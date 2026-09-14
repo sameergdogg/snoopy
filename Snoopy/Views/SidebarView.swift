@@ -1,29 +1,51 @@
 import SwiftUI
+import SnoopyCore
 
 struct SidebarView: View {
     @EnvironmentObject var controller: AppController
+    @EnvironmentObject var store: CaptureStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             List {
-                Section("Simulator") {
-                    Picker("Device", selection: Binding(
-                        get: { controller.selectedDevice },
-                        set: { controller.selectedDevice = $0; controller.refreshApps() })) {
+                Section {
+                    Picker("Device", selection: $controller.selectedDevice) {
                         ForEach(controller.devices) { d in
                             Text("\(d.name) · \(d.runtime)").tag(Optional(d))
                         }
-                        if controller.devices.isEmpty { Text("No booted simulators").tag(Optional<SimDevice>.none) }
+                        if controller.devices.isEmpty {
+                            Text("No booted simulators").tag(Optional<SimDevice>.none)
+                        }
                     }
                     .labelsHidden()
-                    Button { controller.refreshDevices() } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }.buttonStyle(.borderless).font(.caption)
+                } header: {
+                    HStack {
+                        Text("Simulator")
+                        Spacer()
+                        // Refreshing is automatic now (see AppController.startDeviceWatch),
+                        // so this is a nudge rather than the only way to notice a new device.
+                        if controller.isLoadingDevices {
+                            ProgressView().controlSize(.small).scaleEffect(0.6)
+                        } else {
+                            Button { Task { await controller.refreshDevices() } } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .buttonStyle(.borderless).font(.caption2)
+                        }
+                    }
                 }
 
-                Section("App to capture") {
-                    if controller.apps.isEmpty {
-                        Text("No user apps installed").foregroundStyle(.secondary).font(.caption)
+                Section {
+                    if controller.isLoadingApps {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small).scaleEffect(0.6)
+                            Text("Reading installed apps…").font(.caption).foregroundStyle(.secondary)
+                        }
+                    } else if controller.apps.isEmpty {
+                        Text(controller.selectedDevice == nil
+                             ? "Boot a simulator to choose an app"
+                             : "No user apps installed")
+                            .foregroundStyle(.secondary).font(.caption)
                     }
                     ForEach(controller.apps) { app in
                         HStack {
@@ -38,24 +60,39 @@ struct SidebarView: View {
                         .contentShape(Rectangle())
                         .onTapGesture { controller.selectedApp = app }
                     }
+                } header: {
+                    Text("App to capture")
                 }
             }
             .listStyle(.sidebar)
 
             Divider()
             VStack(alignment: .leading, spacing: 8) {
-                Button { controller.launchSelected() } label: {
-                    Label("Run with Snoopy", systemImage: "play.fill").frame(maxWidth: .infinity)
+                // "Launch" rather than a second play glyph: the toolbar's record control is
+                // what starts and stops capture, and having two play buttons that meant
+                // different things was the clearest source of confusion in the old UI.
+                Button { Task { await controller.launchSelected() } } label: {
+                    HStack {
+                        if controller.isLaunching {
+                            ProgressView().controlSize(.small).scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "arrow.up.forward.app.fill")
+                        }
+                        Text(controller.isLaunching ? "Launching…" : "Launch with Snoopy")
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(controller.selectedApp == nil)
+                .disabled(controller.selectedApp == nil || controller.isLaunching)
 
                 Button { controller.copyXcodeHint() } label: {
                     Label("Copy Xcode env vars", systemImage: "doc.on.doc").font(.caption)
                 }.buttonStyle(.borderless)
 
-                Text(controller.store.statusLine)
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                if !store.isRecording {
+                    Label("Capture is paused", systemImage: "pause.circle")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
             }
             .padding(12)
         }

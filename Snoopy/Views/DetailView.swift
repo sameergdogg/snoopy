@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import SnoopyCore
 
 struct DetailView: View {
@@ -8,6 +9,10 @@ struct DetailView: View {
     enum Tab: String, CaseIterable { case request = "Request", response = "Response", timing = "Timing" }
 
     var body: some View {
+        // No outer `ScrollView` here any more. Wrapping the whole pane in one proposed an
+        // unbounded height to everything inside it, which is what made a large body lay out
+        // in full instead of lazily, and it put the JSON tree's own scroll view inside
+        // another one — two scrollers fighting over the same wheel events.
         VStack(spacing: 0) {
             header
             Divider()
@@ -18,12 +23,10 @@ struct DetailView: View {
             .labelsHidden()
             .padding(8)
             Divider()
-            ScrollView {
-                switch tab {
-                case .request: RequestPane(exchange: exchange)
-                case .response: ResponsePane(exchange: exchange)
-                case .timing: TimingPane(exchange: exchange)
-                }
+            switch tab {
+            case .request: RequestPane(exchange: exchange)
+            case .response: ResponsePane(exchange: exchange)
+            case .timing: ScrollView { TimingPane(exchange: exchange) }
             }
         }
     }
@@ -59,212 +62,312 @@ struct DetailView: View {
     }
 
     func copyCurl() {
-        var parts = ["curl", "-X", exchange.method, "'\(exchange.urlString)'"]
-        for (k, v) in exchange.requestHeaders { parts.append("-H '\(k): \(v)'") }
-        if let b = exchange.requestBody, let s = String(data: b, encoding: .utf8) {
-            parts.append("--data '\(s)'")
+        var parts = ["curl", "-X", Shell.quote(exchange.method), Shell.quote(exchange.urlString)]
+        for f in exchange.requestHeaders {
+            parts.append("-H " + Shell.quote("\(f.name): \(f.value)"))
+        }
+        if let b = exchange.requestBody {
+            // A body that is not valid UTF-8 cannot go inside a quoted string at all;
+            // the previous version pasted the replacement characters in and produced a
+            // command that sent different bytes than the app did.
+            if let s = String(data: b, encoding: .utf8) {
+                parts.append("--data-raw " + Shell.quote(s))
+            } else {
+                parts.append("--data-binary @/path/to/body.bin  # body is not UTF-8; use Save Body…")
+            }
         }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(parts.joined(separator: " "), forType: .string)
     }
 }
 
+enum Shell {
+    /// POSIX single-quoting. The old `'\(value)'` interpolation broke on any value
+    /// containing a quote — common in cookies, JSON bodies and signed URLs — and produced
+    /// a command that either failed to parse or, worse, ran something unintended.
+    static func quote(_ s: String) -> String {
+        guard !s.isEmpty else { return "''" }
+        if s.allSatisfy({ $0.isLetter || $0.isNumber || "._-/:=@".contains($0) }) { return s }
+        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+// MARK: - Panes
+
 private struct RequestPane: View {
     let exchange: Exchange
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(spacing: 0) {
             HeadersSection(title: "Request Headers", headers: exchange.requestHeaders)
+            Divider()
             if let omitted = exchange.requestBodyOmitted {
-                LabeledBox(title: "Body") { Text("Not captured (\(omitted))").foregroundStyle(.secondary) }
+                VStack {
+                    Text("Body not captured (\(omitted))").foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                BodySection(bodyId: exchange.id + "#req", title: "Request Body", data: exchange.requestBody,
-                            headers: exchange.requestHeaders, mimeType: nil,
-                            truncated: exchange.requestBodyTruncated, fullSize: exchange.requestBodySize,
-                            reaped: exchange.bodiesReaped)
+                BodySection(exchange: exchange, slot: .request)
             }
-        }.padding(12)
+        }
     }
 }
 
 private struct ResponsePane: View {
     let exchange: Exchange
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(spacing: 0) {
             HeadersSection(title: "Response Headers", headers: exchange.responseHeaders)
-            BodySection(bodyId: exchange.id + "#resp", title: "Response Body", data: exchange.responseBody,
-                        headers: exchange.responseHeaders, mimeType: exchange.mimeType,
-                        truncated: exchange.responseBodyTruncated, fullSize: exchange.responseBodySize,
-                        reaped: exchange.bodiesReaped)
-        }.padding(12)
+            Divider()
+            BodySection(exchange: exchange, slot: .response)
+        }
     }
 }
 
+/// Headers in wire order, with repeated fields shown as the separate fields they are.
 private struct HeadersSection: View {
     let title: String
-    private let sorted: [(key: String, value: String)]
-
-    init(title: String, headers: [String: String]) {
-        self.title = title
-        // Sorted once per construction rather than on every body evaluation.
-        self.sorted = headers.sorted { $0.key < $1.key }.map { (key: $0.key, value: $0.value) }
-    }
+    let headers: Headers
+    @State private var expanded = true
 
     var body: some View {
-        LabeledBox(title: "\(title) (\(sorted.count))") {
-            if sorted.isEmpty { Text("None").foregroundStyle(.secondary) }
-            else {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(sorted, id: \.key) { k, v in
-                        HStack(alignment: .top, spacing: 6) {
-                            Text(k).foregroundStyle(.secondary).frame(width: 180, alignment: .leading)
-                            Text(v).textSelection(.enabled)
-                        }.font(.system(.caption, design: .monospaced))
-                    }
+        DisclosureGroup(isExpanded: $expanded) {
+            if headers.isEmpty {
+                Text("None").foregroundStyle(.secondary).font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        // Index-keyed: two `Set-Cookie` fields are two rows, and a name is
+                        // no longer a unique identifier now that duplicates survive.
+                        ForEach(Array(headers.enumerated()), id: \.offset) { _, f in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text(f.name).foregroundStyle(.secondary)
+                                    .frame(width: 180, alignment: .leading)
+                                Text(f.value).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }.font(.system(.caption, design: .monospaced))
+                        }
+                    }.padding(.vertical, 4)
                 }
+                .frame(maxHeight: 160)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text("\(title) (\(headers.count))").font(.caption).bold().foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(
+                        headers.map { "\($0.name): \($0.value)" }.joined(separator: "\n"), forType: .string)
+                } label: { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.borderless).font(.caption2).foregroundStyle(.secondary)
+                    .help("Copy headers")
             }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }
 
 // MARK: - Body rendering
 
-/// Everything expensive about a body, computed once off the main thread.
-///
-/// The previous version exposed `decoded` and `kind` as computed properties, so a gzipped
-/// response was decompressed several times per frame on the main thread — selecting a large
-/// payload froze the window for as long as it took to inflate it, repeatedly.
-private struct PreparedBody: Sendable {
-    var kind: BodyFormatter.Kind
-    var decoded: Data
-    var text: String?
-    var json: JSONNode?
-    var clipped: Bool
-    var note: String?
-
-    /// A single `Text` cannot lay out an arbitrarily large string; clip what we display and
-    /// say so, rather than hanging the layout pass.
-    static let maxDisplayBytes = 512 * 1024
-    /// Building a tree node per JSON value is fine for typical payloads and ruinous for huge
-    /// ones; past this many nodes we fall back to the text view.
-    static let maxTreeNodes = 60_000
-
-    static func make(data: Data, headers: [String: String], mimeType: String?, mode: Int) -> PreparedBody {
-        let decoded = BodyFormatter.decoded(data, headers: headers)
-        let kind = BodyFormatter.kind(mimeType: mimeType, headers: headers, data: decoded)
-
-        switch mode {
-        case 2:
-            return PreparedBody(kind: kind, decoded: decoded, text: BodyFormatter.hexDump(decoded),
-                                json: nil, clipped: decoded.count > 4096, note: nil)
-        case 1:
-            let (t, clipped) = clip(BodyFormatter.text(decoded))
-            return PreparedBody(kind: kind, decoded: decoded, text: t, json: nil, clipped: clipped, note: nil)
-        default:
-            if kind == .image {
-                return PreparedBody(kind: kind, decoded: decoded, text: nil, json: nil, clipped: false, note: nil)
-            }
-            if kind == .json {
-                if let node = JSONNode.parse(decoded, nodeBudget: maxTreeNodes) {
-                    return PreparedBody(kind: kind, decoded: decoded, text: nil, json: node, clipped: false, note: nil)
-                }
-                let (t, clipped) = clip(BodyFormatter.prettyJSON(decoded) ?? BodyFormatter.text(decoded))
-                return PreparedBody(kind: kind, decoded: decoded, text: t, json: nil, clipped: clipped,
-                                    note: "Too large for the tree view — showing text.")
-            }
-            let (t, clipped) = clip(BodyFormatter.text(decoded))
-            return PreparedBody(kind: kind, decoded: decoded, text: t, json: nil, clipped: clipped, note: nil)
-        }
-    }
-
-    private static func clip(_ s: String) -> (String, Bool) {
-        guard s.utf8.count > maxDisplayBytes else { return (s, false) }
-        return (String(s.prefix(maxDisplayBytes)), true)
-    }
-}
-
 private struct BodySection: View {
-    let bodyId: String
-    let title: String
-    let data: Data?
-    let headers: [String: String]
-    let mimeType: String?
-    let truncated: Bool
-    let fullSize: Int?
-    let reaped: Bool
+    enum Slot { case request, response }
 
-    @State private var mode = 0   // 0 pretty, 1 raw, 2 hex
-    @State private var prepared: PreparedBody?
+    let exchange: Exchange
+    let slot: Slot
+
+    @State private var mode = BodyPreview.Mode.pretty
+    @State private var preview: BodyPreview?
     @State private var preparing = false
     @State private var image: NSImage?
 
-    private struct Key: Equatable { let id: String; let mode: Int }
+    private var data: Data? { slot == .request ? exchange.requestBody : exchange.responseBody }
+    private var headers: Headers { slot == .request ? exchange.requestHeaders : exchange.responseHeaders }
+    private var mimeType: String? { slot == .request ? nil : exchange.mimeType }
+    private var truncated: Bool { slot == .request ? exchange.requestBodyTruncated : exchange.responseBodyTruncated }
+    private var fullSize: Int? { slot == .request ? exchange.requestBodySize : exchange.responseBodySize }
+    private var bodyId: String { exchange.id + (slot == .request ? "#req" : "#resp") }
+
+    private struct Key: Equatable { let id: String; let mode: BodyPreview.Mode }
 
     var body: some View {
-        LabeledBox(title: bodyTitle) {
-            if reaped, data == nil, (fullSize ?? 0) > 0 {
-                Text("Body released to stay within the memory budget (\(byteString(fullSize)) captured).")
-                    .foregroundStyle(.secondary).font(.callout)
-            } else if data == nil || data!.isEmpty {
-                Text("Empty").foregroundStyle(.secondary)
-            } else {
-                Picker("", selection: $mode) {
-                    Text("Pretty").tag(0); Text("Raw").tag(1); Text("Hex").tag(2)
-                }.pickerStyle(.segmented).frame(width: 220).labelsHidden().padding(.bottom, 4)
-
-                content
-                if truncated { Text("Truncated at capture").font(.caption2).foregroundStyle(.orange) }
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            toolbar
+            Divider()
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .task(id: Key(id: bodyId, mode: mode)) { await prepare() }
     }
 
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            Text(title).font(.caption).bold().foregroundStyle(.secondary)
+            Spacer()
+            if hasBody {
+                if let doc = textDocument {
+                    Text("\(doc.lineCount.formatted()) lines")
+                        .font(.caption2).monospacedDigit().foregroundStyle(.tertiary)
+                }
+                Picker("", selection: $mode) {
+                    ForEach(BodyPreview.Mode.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).frame(width: 190).labelsHidden().controlSize(.small)
+                Button { copyBody() } label: { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.borderless).font(.caption).help("Copy body")
+                    .disabled(preview == nil)
+                // The escape hatch for a payload too big to read in a pane — previously the
+                // only suggestion was to export the entire session as HAR.
+                Button { saveBody() } label: { Image(systemName: "square.and.arrow.down") }
+                    .buttonStyle(.borderless).font(.caption).help("Save body…")
+                    .disabled(preview == nil)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    private var hasBody: Bool { !(data?.isEmpty ?? true) }
+
+    private var textDocument: TextDocument? {
+        if case .text(let doc)? = preview?.content { return doc }
+        return nil
+    }
+
     @ViewBuilder
     private var content: some View {
-        if let p = prepared {
-            if let note = p.note {
-                Text(note).font(.caption2).foregroundStyle(.secondary)
-            }
-            if p.kind == .image, mode == 0 {
-                if let image {
-                    Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 320)
-                } else {
-                    Text("Not a decodable image").foregroundStyle(.secondary)
+        if exchange.bodiesReaped, data == nil, (fullSize ?? 0) > 0 {
+            placeholder("Body released to stay within the memory budget (\(byteString(fullSize)) captured).")
+        } else if !hasBody {
+            placeholder("Empty")
+        } else if let p = preview {
+            VStack(alignment: .leading, spacing: 0) {
+                if let note = p.note {
+                    Text(note).font(.caption2).foregroundStyle(.orange)
+                        .padding(.horizontal, 12).padding(.top, 6)
                 }
-            } else if let node = p.json, mode == 0 {
-                JSONTreeView(root: node).frame(minHeight: 120, maxHeight: 460)
-            } else {
-                Text(p.text ?? "").font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if p.clipped {
-                Text("Display clipped — use Export HAR for the full payload.")
-                    .font(.caption2).foregroundStyle(.orange)
+                if truncated {
+                    Text("Truncated at capture — raise SNOOPY_MAX_RESPONSE_BODY to keep more.")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .padding(.horizontal, 12).padding(.top, 6)
+                }
+                switch p.content {
+                case .json(let root, let nodeCount):
+                    JSONTreeView(root: root, treeId: bodyId, nodeCount: nodeCount)
+                case .text(let doc):
+                    TextDocumentView(document: doc, showsLineNumbers: mode != .hex)
+                case .image:
+                    if let image {
+                        ScrollView { Image(nsImage: image).resizable().scaledToFit().padding(12) }
+                    } else {
+                        placeholder("Not a decodable image")
+                    }
+                case .empty:
+                    placeholder("Empty")
+                }
             }
         } else if preparing {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Decoding \(byteString(fullSize ?? data?.count))…").foregroundStyle(.secondary).font(.caption)
-            }
+            VStack {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Decoding \(byteString(fullSize ?? data?.count))…")
+                        .foregroundStyle(.secondary).font(.caption)
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
+    private func placeholder(_ s: String) -> some View {
+        Text(s).foregroundStyle(.secondary).font(.callout)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private func prepare() async {
-        guard let data, !data.isEmpty else { prepared = nil; image = nil; return }
+        guard let data, !data.isEmpty else { preview = nil; image = nil; return }
+        preview = nil
         preparing = true
-        defer { preparing = false }
         let h = headers, m = mimeType, mo = mode
         let result = await Task.detached(priority: .userInitiated) {
-            PreparedBody.make(data: data, headers: h, mimeType: m, mode: mo)
+            BodyPreview.make(data: data, headers: h, mimeType: m, mode: mo)
         }.value
         guard !Task.isCancelled else { return }
-        prepared = result
+        preparing = false
+        preview = result
         image = result.kind == .image ? NSImage(data: result.decoded) : nil
     }
 
-    var bodyTitle: String {
-        var t = title
+    private var title: String {
+        var t = slot == .request ? "Request Body" : "Response Body"
         if let n = fullSize ?? data?.count { t += " (\(byteString(n)))" }
         return t
+    }
+
+    private func copyBody() {
+        guard let p = preview else { return }
+        let text: String
+        switch p.content {
+        case .json(let root, _): text = root.jsonText()
+        case .text(let doc): text = doc.chunks.map(\.text).joined(separator: "\n")
+        case .image, .empty: text = ""
+        }
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func saveBody() {
+        guard let p = preview else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = BodyFormatter.suggestedFilename(
+            url: exchange.url, kind: p.kind, mimeType: mimeType)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        // The decoded (decompressed) bytes, not the display text — a saved body should be
+        // byte-identical to what the app received.
+        try? p.decoded.write(to: url)
+    }
+}
+
+/// Renders a `TextDocument` chunk by chunk inside a `LazyVStack`, so only the chunks near
+/// the viewport are ever laid out. This is the fix for large bodies: the cost of showing a
+/// 200,000-line response is now the cost of showing one screenful of it.
+private struct TextDocumentView: View {
+    let document: TextDocument
+    var showsLineNumbers = true
+
+    var body: some View {
+        // Vertical only, for the same reason as the JSON tree: a bidirectional scroll
+        // view proposes an unbounded width and the chunks fail to lay out inside it.
+        // Long lines wrap, which for a body viewer beats not rendering at all.
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(document.chunks) { chunk in
+                    HStack(alignment: .top, spacing: 8) {
+                        if showsLineNumbers {
+                            Text(lineNumbers(for: chunk))
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 52, alignment: .trailing)
+                        }
+                        Text(chunk.text)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.system(.caption, design: .monospaced))
+                }
+                if document.truncated {
+                    Text("Display limited to \(byteString(document.byteCount)) — use Save Body for the rest.")
+                        .font(.caption2).foregroundStyle(.orange).padding(.vertical, 6)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// One `Text` of right-aligned numbers per chunk rather than one per line — the gutter
+    /// should not multiply the view count it exists to annotate.
+    private func lineNumbers(for chunk: TextDocument.Chunk) -> String {
+        (0..<chunk.lineCount).map { String(chunk.firstLine + $0) }.joined(separator: "\n")
     }
 }
 

@@ -45,11 +45,56 @@ SNPRecord *SNPRecordForTask(NSURLSessionTask *task) {
     }
 }
 
-static NSDictionary *SNPHeaders(NSDictionary *h) {
-    if (!h) return @{};
-    NSMutableDictionary *out = [NSMutableDictionary dictionaryWithCapacity:h.count];
+/// True if `s` from `i` looks like the start of a new cookie, i.e. `token=`.
+/// Used to undo Foundation's comma-joining of repeated Set-Cookie headers without
+/// splitting inside an `Expires=Wed, 21 Oct 2015 ...` date, which also contains a comma.
+static BOOL SNPLooksLikeCookieStart(NSString *s, NSUInteger i) {
+    NSUInteger n = s.length;
+    while (i < n && [s characterAtIndex:i] == ' ') i++;
+    NSUInteger nameStart = i;
+    while (i < n) {
+        unichar c = [s characterAtIndex:i];
+        if (c == '=') return i > nameStart;
+        // Cookie names are RFC 2616 tokens: no separators, no whitespace.
+        if (c == ';' || c == ',' || c == ' ' || c == '\t' || c == '"') return NO;
+        i++;
+    }
+    return NO;
+}
+
+/// Foundation hands back `Set-Cookie: a=1, b=2` for what the server sent as two headers.
+/// Splitting it back out is the only way an inspector can show what actually arrived.
+static NSArray<NSString *> *SNPSplitSetCookie(NSString *value) {
+    NSMutableArray *out = [NSMutableArray array];
+    NSUInteger start = 0, n = value.length;
+    for (NSUInteger i = 0; i < n; i++) {
+        if ([value characterAtIndex:i] != ',') continue;
+        if (!SNPLooksLikeCookieStart(value, i + 1)) continue;
+        NSString *piece = [[value substringWithRange:NSMakeRange(start, i - start)]
+                           stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (piece.length) [out addObject:piece];
+        start = i + 1;
+    }
+    NSString *tail = [[value substringFromIndex:start]
+                      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    if (tail.length) [out addObject:tail];
+    return out;
+}
+
+/// Headers go over the wire as an ordered array of [name, value] pairs rather than a JSON
+/// object. An object collapses repeated headers, which is precisely the information an
+/// inspector must not lose, and it discards the order the server sent them in.
+static NSArray *SNPHeaders(NSDictionary *h) {
+    if (!h) return @[];
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:h.count];
     [h enumerateKeysAndObjectsUsingBlock:^(id k, id v, BOOL *stop) {
-        out[[k description]] = [v description];
+        NSString *name = [k description];
+        NSString *value = [v description];
+        if ([name caseInsensitiveCompare:@"Set-Cookie"] == NSOrderedSame) {
+            for (NSString *one in SNPSplitSetCookie(value)) [out addObject:@[name, one]];
+        } else {
+            [out addObject:@[name, value]];
+        }
     }];
     return out;
 }

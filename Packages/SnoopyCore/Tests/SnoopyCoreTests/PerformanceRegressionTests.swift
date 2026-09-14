@@ -133,7 +133,8 @@ final class JSONNodeBudgetTests: XCTestCase {
         XCTAssertEqual(hits.matches.count, 1)
         let deep = node.search("value")
         XCTAssertEqual(deep.matches.count, 1)
-        XCTAssertTrue(deep.ancestors.contains("$.n"), "ancestors drive auto-expand")
+        let n = node.children!.first { $0.key == "n" }!
+        XCTAssertTrue(deep.ancestors.contains(n.id), "ancestors drive auto-expand")
     }
 
     func testEmptyQueryMatchesNothing() {

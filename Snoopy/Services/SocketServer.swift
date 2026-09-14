@@ -1,5 +1,6 @@
 import Foundation
 import SnoopyIPC
+import SnoopyCore
 import Darwin
 
 /// Listens on a Unix domain socket for hook connections and emits decoded events.
@@ -7,12 +8,21 @@ import Darwin
 /// (called on an arbitrary background queue — hop to main in the handler).
 final class SocketServer {
     let socketPath: String
-    var onEvent: ((HookEvent) -> Void)?
+    var onEvent: ((CaptureEvent) -> Void)?
+
     private var listenFD: Int32 = -1
+    private let stateLock = NSLock()
     private var running = false
     private let acceptQueue = DispatchQueue(label: "dev.snoopy.socket.accept")
 
     init(socketPath: String) { self.socketPath = socketPath }
+
+    deinit { stop() }
+
+    private var isRunning: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return running
+    }
 
     func start() throws {
         unlink(socketPath)
@@ -32,20 +42,38 @@ final class SocketServer {
         guard bound == 0 else { close(fd); throw err("bind") }
         guard listen(fd, 16) == 0 else { close(fd); throw err("listen") }
         listenFD = fd
-        running = true
+        stateLock.lock(); running = true; stateLock.unlock()
         acceptQueue.async { [weak self] in self?.acceptLoop() }
     }
 
+    /// Idempotent, and now actually called — from `AppController`'s deinit and on app
+    /// termination. Nothing used to call it, so every run of Snoopy left its socket behind
+    /// in /tmp and the listening fd open until the process died.
     func stop() {
+        stateLock.lock()
+        let wasRunning = running
         running = false
-        if listenFD >= 0 { close(listenFD); listenFD = -1 }
+        let fd = listenFD
+        listenFD = -1
+        stateLock.unlock()
+        guard wasRunning else { return }
+        // Shutdown first: closing alone can leave a blocked `accept` parked on a stale fd,
+        // whereas shutdown wakes it so the loop observes `running == false` and exits.
+        shutdown(fd, SHUT_RDWR)
+        if fd >= 0 { close(fd) }
         unlink(socketPath)
     }
 
     private func acceptLoop() {
-        while running {
+        while isRunning {
             let client = accept(listenFD, nil, nil)
-            if client < 0 { if running { usleep(10_000); continue } else { break } }
+            if client < 0 {
+                // Previously this slept and retried unconditionally, so once the listening
+                // fd was closed the loop spun at ~100 Hz forever instead of finishing.
+                guard isRunning, errno == EINTR || errno == EAGAIN || errno == ECONNABORTED else { break }
+                usleep(10_000)
+                continue
+            }
             let readQueue = DispatchQueue(label: "dev.snoopy.socket.read.\(client)")
             readQueue.async { [weak self] in self?.readLoop(client) }
         }
@@ -55,10 +83,20 @@ final class SocketServer {
         var parser = FrameParser()
         let bufSize = 64 * 1024
         let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: bufSize)
-        defer { buf.deallocate(); close(fd) }
-        while running {
+        // The pid this connection announced, so its departure can be reported. Without it
+        // the UI listed every process that had ever attached and never removed any of them.
+        var connectedPID: Int32?
+        defer {
+            buf.deallocate()
+            close(fd)
+            if let pid = connectedPID { onEvent?(.detached(pid: pid)) }
+        }
+        while isRunning {
             let n = read(fd, buf, bufSize)
-            if n <= 0 { break }
+            if n <= 0 {
+                if n < 0 && errno == EINTR { continue }
+                break
+            }
             // This loop never returns, so the pool GCD installs around the block never
             // drains. `JSONSerialization` hands back autoreleased NSString/NSData — for a
             // capture with large bodies that accumulates gigabytes of reachable-but-dead
@@ -66,7 +104,9 @@ final class SocketServer {
             autoreleasepool {
                 let chunk = Data(bytes: buf, count: n)
                 for obj in parser.append(chunk) {
-                    if let event = HookEventDecoder.decode(obj) { onEvent?(event) }
+                    guard let event = HookEventDecoder.decode(obj) else { continue }
+                    if case .hello(let pid, _, _) = event { connectedPID = pid }
+                    onEvent?(event.captureEvent)
                 }
             }
         }

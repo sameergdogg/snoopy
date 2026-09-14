@@ -48,16 +48,12 @@ struct TimelineStrip: View {
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
-            if store.matchCount > store.visible.count {
-                Text("newest \(store.visible.count) of \(store.matchCount) shown")
-                    .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+            // Retained bytes, dropped rows and the live row window moved to the status bar,
+            // where they belong together and there is room to say what they mean.
+            if store.matchCount > 0 {
+                Text("\(store.matchCount.formatted()) in view")
+                    .font(.caption2).monospacedDigit().foregroundStyle(.tertiary)
             }
-            if store.droppedCount > 0 {
-                Text("\(store.droppedCount) older dropped")
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
-            Text(byteString(store.retainedBytes) + " held")
-                .font(.caption2).monospacedDigit().foregroundStyle(.tertiary)
         }
     }
 

@@ -16,8 +16,23 @@ public enum HARExport {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f.string(from: d)
     }
-    static func headerList(_ h: [String: String]) -> [[String: String]] {
-        h.map { ["name": $0.key, "value": $0.value] }
+    /// Wire order and duplicates are preserved — HAR's `headers` is an array precisely so
+    /// that repeated `Set-Cookie` fields survive, and exporting from a dictionary silently
+    /// dropped all but one of them.
+    static func headerList(_ h: Headers) -> [[String: String]] {
+        h.fields.map { ["name": $0.name, "value": $0.value] }
+    }
+
+    /// HAR wants cookies broken out as well as left in the header list.
+    static func cookieList(_ h: Headers, header: String) -> [[String: Any]] {
+        h.all(header).compactMap { raw -> [String: Any]? in
+            let parts = raw.split(separator: ";")
+            guard let pair = parts.first, let eq = pair.firstIndex(of: "=") else { return nil }
+            let name = pair[pair.startIndex..<eq].trimmingCharacters(in: .whitespaces)
+            let value = pair[pair.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { return nil }
+            return ["name": name, "value": value]
+        }
     }
     static func entry(for e: Exchange) -> [String: Any] {
         var request: [String: Any] = [
@@ -28,17 +43,17 @@ public enum HARExport {
             "queryString": queryString(e.url),
             "headersSize": -1,
             "bodySize": e.requestBodySize ?? -1,
-            "cookies": [],
+            "cookies": cookieList(e.requestHeaders, header: "Cookie"),
         ]
         if let body = e.requestBody {
             request["postData"] = [
-                "mimeType": e.requestHeaders.firstValue(forCaseInsensitive: "Content-Type") ?? "application/octet-stream",
+                "mimeType": e.requestHeaders.first("Content-Type") ?? "application/octet-stream",
                 "text": BodyFormatter.text(body),
             ]
         }
         let responseContent: [String: Any] = [
             "size": e.responseBodySize ?? (e.responseBody?.count ?? 0),
-            "mimeType": e.mimeType ?? e.responseHeaders.firstValue(forCaseInsensitive: "Content-Type") ?? "",
+            "mimeType": e.mimeType ?? e.responseHeaders.first("Content-Type") ?? "",
             "text": e.responseBody.map { BodyFormatter.text($0) } ?? "",
         ]
         let response: [String: Any] = [
@@ -46,9 +61,9 @@ public enum HARExport {
             "statusText": "",
             "httpVersion": e.metrics?.networkProtocol ?? "HTTP/1.1",
             "headers": headerList(e.responseHeaders),
-            "cookies": [],
+            "cookies": cookieList(e.responseHeaders, header: "Set-Cookie"),
             "content": responseContent,
-            "redirectURL": e.responseHeaders.firstValue(forCaseInsensitive: "Location") ?? "",
+            "redirectURL": e.responseHeaders.first("Location") ?? "",
             "headersSize": -1,
             "bodySize": e.responseBodySize ?? -1,
         ]

@@ -2,11 +2,11 @@ import Foundation
 
 /// Decodes and pretty-prints response/request bodies for display.
 public enum BodyFormatter {
-    public enum Kind: Sendable { case json, text, image, binary, empty }
+    public enum Kind: Sendable, Hashable { case json, text, image, binary, empty }
 
-    public static func kind(mimeType: String?, headers: [String: String], data: Data?) -> Kind {
+    public static func kind(mimeType: String?, headers: Headers, data: Data?) -> Kind {
         guard let data, !data.isEmpty else { return .empty }
-        let ct = (mimeType ?? headers.firstValue(forCaseInsensitive: "Content-Type") ?? "").lowercased()
+        let ct = (mimeType ?? headers.first("Content-Type") ?? "").lowercased()
         if ct.contains("json") { return .json }
         if ct.hasPrefix("image/") { return .image }
         if ct.hasPrefix("text/") || ct.contains("xml") || ct.contains("javascript") || ct.contains("urlencoded") { return .text }
@@ -17,8 +17,8 @@ public enum BodyFormatter {
     }
 
     /// Returns decompressed bytes if Content-Encoding indicates gzip/deflate; else the input.
-    public static func decoded(_ data: Data, headers: [String: String]) -> Data {
-        let enc = (headers.firstValue(forCaseInsensitive: "Content-Encoding") ?? "").lowercased()
+    public static func decoded(_ data: Data, headers: Headers) -> Data {
+        let enc = (headers.first("Content-Encoding") ?? "").lowercased()
         if enc.contains("gzip") || enc.contains("deflate") {
             return (try? Gzip.decompress(data)) ?? data
         }
@@ -27,8 +27,15 @@ public enum BodyFormatter {
 
     public static func prettyJSON(_ data: Data) -> String? {
         guard let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) else { return nil }
+        return prettyJSON(object: obj)
+    }
+
+    /// Pretty-prints an already-parsed object. Splitting this out of `prettyJSON(_:Data)`
+    /// means the tree-parse and the text fallback can share one `JSONSerialization` pass;
+    /// previously a body that overflowed the tree budget was parsed from bytes twice.
+    public static func prettyJSON(object: Any) -> String? {
         let opts: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes, .fragmentsAllowed]
-        guard let out = try? JSONSerialization.data(withJSONObject: obj, options: opts) else { return nil }
+        guard let out = try? JSONSerialization.data(withJSONObject: object, options: opts) else { return nil }
         return String(data: out, encoding: .utf8)
     }
 
@@ -36,17 +43,16 @@ public enum BodyFormatter {
         String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
     }
 
-    public static func hexDump(_ data: Data, maxBytes: Int = 4096) -> String {
-        let slice = data.prefix(maxBytes)
+    public static func hexDump(_ data: Data, offset: Int = 0, maxBytes: Int = 64 * 1024) -> String {
+        let slice = data.dropFirst(offset).prefix(maxBytes)
         var out = ""
-        var offset = 0
+        var addr = offset
         for chunk in slice.chunked(16) {
             let hex = chunk.map { String(format: "%02x", $0) }.joined(separator: " ")
             let ascii = chunk.map { (32...126).contains($0) ? String(UnicodeScalar($0)) : "." }.joined()
-            out += String(format: "%08x  %-47s  %@\n", offset, (hex as NSString).utf8String!, ascii)
-            offset += chunk.count
+            out += String(format: "%08x  %-47s  %@\n", addr, (hex as NSString).utf8String!, ascii)
+            addr += chunk.count
         }
-        if data.count > maxBytes { out += "… (\(data.count - maxBytes) more bytes)\n" }
         return out
     }
 
@@ -60,12 +66,19 @@ public enum BodyFormatter {
         for b in sample where b < 0x09 || (b > 0x0d && b < 0x20) { control += 1 }
         return control == 0
     }
-}
 
-public extension Dictionary where Key == String, Value == String {
-    func firstValue(forCaseInsensitive key: String) -> String? {
-        let lk = key.lowercased()
-        return first { $0.key.lowercased() == lk }?.value
+    /// A filename suggestion for "Save body…", derived from the URL and content type.
+    public static func suggestedFilename(url: URL?, kind: Kind, mimeType: String?) -> String {
+        let stem = url?.lastPathComponent.isEmpty == false ? url!.lastPathComponent : "body"
+        if stem.contains(".") { return stem }
+        let ext: String
+        switch kind {
+        case .json: ext = "json"
+        case .text: ext = (mimeType ?? "").contains("xml") ? "xml" : "txt"
+        case .image: ext = (mimeType ?? "").split(separator: "/").last.map(String.init) ?? "img"
+        case .binary, .empty: ext = "bin"
+        }
+        return "\(stem).\(ext)"
     }
 }
 

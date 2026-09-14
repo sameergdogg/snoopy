@@ -16,7 +16,7 @@ public enum HookEvent: Sendable {
         public var t: Double
         public var method: String
         public var url: String
-        public var headers: [String: String]
+        public var headers: Headers
         public var body: Data?
         public var bodySize: Int?
         public var bodyTruncated: Bool
@@ -27,14 +27,14 @@ public enum HookEvent: Sendable {
         public var t: Double
         public var status: Int?
         public var mimeType: String?
-        public var headers: [String: String]
+        public var headers: Headers
     }
     public struct CompleteEvent: Sendable {
         public var id: String
         public var t: Double
         public var status: Int?
         public var mimeType: String?
-        public var headers: [String: String]
+        public var headers: Headers
         public var body: Data?
         public var bodySize: Int?
         public var bodyTruncated: Bool
@@ -95,9 +95,21 @@ public enum HookEventDecoder {
         }
     }
 
-    static func headers(_ v: Any?) -> [String: String] {
-        guard let d = v as? [String: Any] else { return [:] }
-        return d.mapValues { "\($0)" }
+    /// Accepts the current wire format — an ordered array of `[name, value]` pairs — and
+    /// the legacy object form, so a Snoopy build still works against an older injected
+    /// hook that a developer has lying around in a built app bundle.
+    static func headers(_ v: Any?) -> Headers {
+        if let pairs = v as? [[Any]] {
+            var h = Headers()
+            for p in pairs where p.count >= 2 {
+                h.append(name: "\(p[0])", value: "\(p[1])")
+            }
+            return h
+        }
+        if let d = v as? [String: Any] {
+            return Headers(dictionary: d.mapValues { "\($0)" })
+        }
+        return Headers()
     }
     static func data(_ v: Any?) -> Data? {
         guard let s = v as? String else { return nil }
@@ -120,5 +132,31 @@ public enum HookEventDecoder {
         t.reused = j["reused"] as? Bool
         t.redirectCount = int(j["redirects"])
         return t
+    }
+}
+
+public extension HookEvent {
+    /// Maps a wire event onto the store's vocabulary. `.detached` has no wire equivalent —
+    /// the socket server raises it when a reader loop ends.
+    var captureEvent: CaptureEvent {
+        switch self {
+        case .hello(let pid, let process, let bundleId):
+            return .attached(pid: pid, process: process, bundleId: bundleId)
+        case .log(let m):
+            return .log(m)
+        case .request(let r):
+            return .request(.init(id: r.id, taskId: r.taskId, t: r.t, method: r.method, url: r.url,
+                                  headers: r.headers, body: r.body, bodySize: r.bodySize,
+                                  bodyTruncated: r.bodyTruncated, bodyOmitted: r.bodyOmitted))
+        case .response(let r):
+            return .response(.init(id: r.id, t: r.t, status: r.status, mimeType: r.mimeType, headers: r.headers))
+        case .metrics(let id, let timing):
+            return .metrics(id: id, timing: timing)
+        case .complete(let c):
+            return .complete(.init(id: c.id, t: c.t, status: c.status, mimeType: c.mimeType,
+                                   headers: c.headers, body: c.body, bodySize: c.bodySize,
+                                   bodyTruncated: c.bodyTruncated, errorMessage: c.errorMessage,
+                                   errorCode: c.errorCode, timing: c.timing))
+        }
     }
 }
