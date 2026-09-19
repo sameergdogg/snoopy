@@ -5,7 +5,7 @@ import SnoopyCore
 @main
 struct SnoopyApp: App {
     @StateObject private var controller = AppController()
-    @StateObject private var updates = UpdateController()
+    @StateObject private var updater = Updater()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
@@ -13,22 +13,17 @@ struct SnoopyApp: App {
             RootView()
                 .environmentObject(controller)
                 .environmentObject(controller.store)
-                .environmentObject(updates)
+                .environmentObject(updater)
                 .frame(minWidth: 1000, minHeight: 620)
-                .onAppear {
-                    delegate.controller = controller
-                    updates.checkInBackgroundIfDue()
-                }
+                .onAppear { delegate.controller = controller }
         }
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") {
-                    Task { await updates.check(userInitiated: true) }
-                }
-                .disabled(updates.state == .checking)
-                Toggle("Check Automatically", isOn: Binding(
-                    get: { updates.automaticChecks },
-                    set: { updates.automaticChecks = $0 }))
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheck)
+                Toggle("Check for Updates Automatically", isOn: $updater.automaticallyChecks)
+                Toggle("Download and Install Automatically", isOn: $updater.automaticallyDownloads)
+                    .disabled(!updater.automaticallyChecks)
             }
             CommandGroup(replacing: .newItem) {
                 Button("Open Session…") { controller.openSession() }

@@ -16,3 +16,4 @@ spikes/**/simapp
 spikes/**/tlsapp*
 .signing/
 dist/
+.sparkle/

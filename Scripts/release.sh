@@ -28,9 +28,12 @@ fi
 BUILD_NUMBER="${BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD)}"
 echo "Version: $SHORT_VERSION (build $BUILD_NUMBER), channel $VERSION"
 TEAM_ID="${TEAM_ID:-9B6HPGD2B9}"
+GH_OWNER="${GH_OWNER:-sameergdogg}"
+GH_REPO="${GH_REPO:-snoopy}"
 KEY_ID="${KEY_ID:-4DZTWDQRU6}"
 KEY_FILE="${KEY_FILE:-$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8}"
-: "${ISSUER_ID:?set ISSUER_ID to your App Store Connect issuer UUID}"
+: "${ISSUER_ID:=${SKIP_NOTARIZE:+unused}}"
+[ -n "${ISSUER_ID:-}" ] || { echo "set ISSUER_ID to your App Store Connect issuer UUID"; exit 1; }
 
 IDENTITY="${IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application/{print $2; exit}')}"
 [ -n "$IDENTITY" ] || { echo "No 'Developer ID Application' identity found. Create the cert first."; exit 1; }
@@ -69,23 +72,64 @@ fi
 echo "    app reports $BUILT_SHORT ($BUILT_BUILD), channel $BUILT_CHANNEL"
 
 echo "==> Signing (inside-out) with hardened runtime + secure timestamp"
-# Sign every embedded Mach-O first (the injected hook dylib), then the app.
-find "$APP/Contents" -type f \( -name "*.dylib" -o -name "*.framework" \) -print0 2>/dev/null | while IFS= read -r -d '' f; do
-  codesign --force --timestamp --options runtime --sign "$IDENTITY" "$f"
+sign() { codesign --force --timestamp --options runtime --sign "$IDENTITY" "$@"; }
+
+# Order matters: a containing bundle's signature covers its contents, so anything nested
+# must be signed before the thing that contains it. Sparkle makes this real — its framework
+# ships a nested Updater.app and a standalone Autoupdate helper, and signing only the
+# framework leaves them unsigned, which fails notarization and then fails to launch.
+# `-depth` walks contents before their directory, which is exactly inside-out order.
+find "$APP/Contents" -depth \( -name "*.app" -o -name "*.xpc" \) -print0 2>/dev/null | while IFS= read -r -d '' f; do
+  echo "    nested bundle: ${f#$APP/}"
+  sign "$f"
 done
-codesign --force --timestamp --options runtime --sign "$IDENTITY" "$APP"
-codesign --verify --strict --verbose=2 "$APP"
+
+# Loose Mach-O helpers and libraries: the injected hook dylib, Sparkle's Autoupdate.
+find "$APP/Contents" -type f -perm -u+x -print0 2>/dev/null | while IFS= read -r -d '' f; do
+  # Only actual Mach-O files; scripts and resources are covered by the enclosing signature.
+  if file -b "$f" | grep -q "Mach-O"; then
+    case "$f" in
+      "$APP/Contents/MacOS/$APPNAME") continue ;;   # the main executable, signed with the app
+    esac
+    echo "    macho: ${f#$APP/}"
+    sign "$f"
+  fi
+done
+
+# Versioned frameworks are signed at the version directory, then the bundle.
+for fw in "$APP/Contents/Frameworks/"*.framework; do
+  [ -e "$fw" ] || continue
+  for v in "$fw/Versions/"*/; do
+    case "$v" in *"/Current/") continue ;; esac
+    [ -d "$v" ] && { echo "    framework version: ${v#$APP/}"; sign "$v"; }
+  done
+  echo "    framework: ${fw#$APP/}"
+  sign "$fw"
+done
+
+sign "$APP"
+# --deep on *verification* (not signing) is the check that every nested piece above really
+# did get signed; it is how an unsigned Sparkle helper would be caught here rather than by
+# the notary service ten minutes later.
+codesign --verify --deep --strict --verbose=2 "$APP"
+
+if [ -n "${SKIP_NOTARIZE:-}" ]; then
+  echo "==> Skipping notarization (SKIP_NOTARIZE set) — for verifying signing only."
+  echo "    The resulting DMG is NOT distributable."
+fi
 
 echo "==> Notarizing"
 ZIP="$DIST/$APPNAME-notarize.zip"
-/usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
-xcrun notarytool submit "$ZIP" \
-  --key "$KEY_FILE" --key-id "$KEY_ID" --issuer "$ISSUER_ID" \
-  --wait
-echo "==> Stapling"
-xcrun stapler staple "$APP"
-xcrun stapler validate "$APP"
-spctl -a -vvv --type execute "$APP" || true
+if [ -z "${SKIP_NOTARIZE:-}" ]; then
+  /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
+  xcrun notarytool submit "$ZIP" \
+    --key "$KEY_FILE" --key-id "$KEY_ID" --issuer "$ISSUER_ID" \
+    --wait
+  echo "==> Stapling"
+  xcrun stapler staple "$APP"
+  xcrun stapler validate "$APP"
+  spctl -a -vvv --type execute "$APP" || true
+fi
 
 echo "==> Building DMG"
 DMG="$DIST/$APPNAME-$VERSION.dmg"
@@ -93,9 +137,62 @@ STAGE="$(mktemp -d)"; cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applic
 hdiutil create -volname "$APPNAME $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$STAGE"
 codesign --force --timestamp --sign "$IDENTITY" "$DMG"
-# Notarize + staple the DMG too, so the download itself passes Gatekeeper.
-xcrun notarytool submit "$DMG" --key "$KEY_FILE" --key-id "$KEY_ID" --issuer "$ISSUER_ID" --wait
-xcrun stapler staple "$DMG"
+if [ -z "${SKIP_NOTARIZE:-}" ]; then
+  # Notarize + staple the DMG too, so the download itself passes Gatekeeper.
+  xcrun notarytool submit "$DMG" --key "$KEY_FILE" --key-id "$KEY_ID" --issuer "$ISSUER_ID" --wait
+  xcrun stapler staple "$DMG"
+fi
 
 shasum -a 256 "$DMG" | tee "$DMG.sha256"
-echo "==> Done: $DMG"
+
+echo "==> Building the Sparkle appcast"
+# Sparkle needs a signed feed to offer this build to anyone already running Snoopy. The
+# private EdDSA key lives only in this machine's login keychain; generate_appcast reads it
+# from there and never writes it anywhere.
+SPARKLE_BIN="${SPARKLE_BIN:-$ROOT/.sparkle/bin}"
+if [ ! -x "$SPARKLE_BIN/generate_appcast" ]; then
+  echo "Sparkle tools not found at $SPARKLE_BIN — run Scripts/fetch-sparkle-tools.sh first."
+  exit 1
+fi
+
+FEED="$DIST/appcast"; mkdir -p "$FEED"
+cp "$DMG" "$FEED/"
+# Release notes for this version, shown inside Sparkle's update window. Matching the
+# archive's basename is how generate_appcast finds them.
+NOTES="$ROOT/docs/RELEASE_NOTES_$VERSION.md"
+[ -f "$NOTES" ] && cp "$NOTES" "$FEED/$APPNAME-$VERSION.md"
+
+# Start from the published feed so the history survives; a feed rebuilt from scratch each
+# time would drop every earlier version's entry.
+PUBLISHED_FEED="https://github.com/$GH_OWNER/$GH_REPO/releases/latest/download/appcast.xml"
+if curl -fsSL "$PUBLISHED_FEED" -o "$FEED/appcast.xml" 2>/dev/null; then
+  echo "    seeded from the published feed"
+else
+  echo "    no published feed yet — starting a new one"
+fi
+
+"$SPARKLE_BIN/generate_appcast" \
+  --download-url-prefix "https://github.com/$GH_OWNER/$GH_REPO/releases/download/v$VERSION/" \
+  --link "https://github.com/$GH_OWNER/$GH_REPO" \
+  --full-release-notes-url "https://github.com/$GH_OWNER/$GH_REPO/releases" \
+  --embed-release-notes \
+  "$FEED"
+
+APPCAST="$FEED/appcast.xml"
+[ -f "$APPCAST" ] || { echo "generate_appcast produced no appcast.xml"; exit 1; }
+# A feed that does not mention this build would silently never offer it.
+grep -q "sparkle:edSignature" "$APPCAST" || { echo "appcast has no EdDSA signature"; exit 1; }
+grep -q "$APPNAME-$VERSION.dmg" "$APPCAST" || { echo "appcast does not list $APPNAME-$VERSION.dmg"; exit 1; }
+cp "$APPCAST" "$DIST/appcast.xml"
+rm -f "$FEED/$APPNAME-$VERSION.dmg"
+echo "    appcast: $DIST/appcast.xml"
+
+echo "==> Done"
+echo "    $DMG"
+echo "    $DIST/appcast.xml"
+echo
+echo "Publish both — the appcast must be attached to the release, because SUFeedURL points at"
+echo "releases/latest/download/appcast.xml:"
+echo "    gh release create v$VERSION \\"
+echo "      \"$DMG\" \"$DMG.sha256\" \"$DIST/appcast.xml\" \\"
+echo "      --title \"$APPNAME $VERSION\" --notes-file docs/RELEASE_NOTES_$VERSION.md"

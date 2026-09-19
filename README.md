@@ -136,18 +136,22 @@ elsewhere.
 
 ## Updates
 
-Snoopy checks its GitHub releases page for a newer build — at most once a day, never
-blocking, and silently when there is nothing to say. When there is, a strip appears above the
-capture with the version, the download size and the release notes.
+Snoopy updates itself, via [Sparkle](https://sparkle-project.org). It checks the releases
+page in the background, downloads the new version, verifies it and installs it; the next
+launch is simply the new version.
 
-**Check for Updates…** in the Snoopy menu asks immediately and always answers, and
-**Check Automatically** turns the background check off.
+- **Snoopy → Check for Updates…** asks immediately and always answers.
+- **Check for Updates Automatically** and **Download and Install Automatically** are on by
+  default and can be turned off in the same menu.
 
-Downloading is one click; installing is deliberately still yours. Snoopy puts the signed,
-notarized DMG in `~/Downloads` and offers to open it — it does not replace itself in place.
-Swapping a running app bundle out from under itself is the part that goes wrong, and doing it
-safely is what Sparkle exists for; until that is worth adding, the honest version is a
-download and a drag.
+Updates carry an EdDSA signature and are refused unless it matches the public key baked into
+the app, in addition to Developer ID signing and notarization. The private half lives only in
+the release machine's login keychain.
+
+The feed is `appcast.xml`, attached to each GitHub release; `SUFeedURL` points at
+`releases/latest/download/appcast.xml`, which GitHub keeps pointed at the newest
+non-prerelease. `Scripts/release.sh` builds, signs and verifies it as part of a release —
+see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Build
 

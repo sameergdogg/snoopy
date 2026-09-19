@@ -28,6 +28,16 @@
 	<string>MIT License</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/sameergdogg/snoopy/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>RTbdSO7FN4Hlu8jTkod4SvcdB8SsFRN6CqEoxV5jpag=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 	<key>SnoopyReleaseChannel</key>
 	<string>$(SNOOPY_RELEASE_CHANNEL)</string>
 </dict>

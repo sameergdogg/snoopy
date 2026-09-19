@@ -8,6 +8,9 @@ options:
 packages:
   SnoopyCore:
     path: Packages/SnoopyCore
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.10.0"
 targets:
   Snoopy:
     type: application
@@ -20,6 +23,8 @@ targets:
         product: SnoopyCore
       - package: SnoopyCore
         product: SnoopyIPC
+      - package: Sparkle
+        product: Sparkle
     info:
       path: Snoopy/Info.plist
       properties:
@@ -32,6 +37,21 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SnoopyReleaseChannel: "$(SNOOPY_RELEASE_CHANNEL)"
+
+        # Sparkle. The feed is the appcast attached to the newest non-prerelease, and
+        # GitHub's /releases/latest/download/<asset> redirect keeps that URL stable.
+        SUFeedURL: "https://github.com/sameergdogg/snoopy/releases/latest/download/appcast.xml"
+        # Public half of the EdDSA pair; the private half lives only in the login keychain of
+        # the release machine. An update that is not signed by it is refused.
+        SUPublicEDKey: "RTbdSO7FN4Hlu8jTkod4SvcdB8SsFRN6CqEoxV5jpag="
+        # Set explicitly so Sparkle never shows its "check for updates?" permission prompt
+        # on first launch — the answer is yes, and the user can change it in the menu.
+        SUEnableAutomaticChecks: true
+        # Download and stage updates in the background, then apply on quit. This is what
+        # makes it an auto-update rather than a prompt: the next launch is simply the new
+        # version. "Install and Relaunch" is still offered for anyone who wants it now.
+        SUAutomaticallyUpdate: true
+        SUScheduledCheckInterval: 86400
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "MIT License"
