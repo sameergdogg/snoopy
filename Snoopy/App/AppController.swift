@@ -22,6 +22,11 @@ final class AppController: ObservableObject {
     @Published var apps: [SimApp] = []
     @Published var selectedApp: SimApp?
     @Published var notice: Notice?
+    /// Strip credentials from agent exports. Persisted, and on unless deliberately turned
+    /// off, because an export is made to be read somewhere other than this machine.
+    @Published var redactExports: Bool = UserDefaults.standard.object(forKey: "dev.snoopy.redactExports") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(redactExports, forKey: "dev.snoopy.redactExports") }
+    }
 
     @Published private(set) var isLoadingDevices = false
     @Published private(set) var isLoadingApps = false
@@ -205,6 +210,40 @@ final class AppController: ObservableObject {
                 notice = Notice(level: .info, text: "Saved \(rows.count.formatted()) exchanges.")
             } catch {
                 notice = Notice(level: .error, text: "Save failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Writes the capture as a folder an agent can work through: a small summary, one
+    /// line of metadata per exchange, and bodies as separate files it can open selectively.
+    func exportForAgent() {
+        guard !store.exchanges.isEmpty else {
+            notice = Notice(level: .info, text: "Nothing captured yet.")
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.message = "Choose where to write the export folder"
+        panel.prompt = "Export"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let parent = panel.url else { return }
+
+        var options = AgentExport.Options()
+        options.redactSecrets = redactExports
+        let rows = store.exchanges
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try AgentExport.write(rows, into: parent, options: options)
+                }.value
+                NSWorkspace.shared.activateFileViewerSelecting([result.directory])
+                notice = Notice(level: .info, text:
+                    "Exported \(result.exchangeCount.formatted()) exchanges and \(result.bodyFileCount.formatted()) body files"
+                    + (options.redactSecrets ? "." : " — credentials are NOT redacted."))
+            } catch {
+                notice = Notice(level: .error, text: "Export failed: \(error.localizedDescription)")
             }
         }
     }

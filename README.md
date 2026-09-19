@@ -69,6 +69,31 @@ The filter matches method, host, path, query and status. Toggle the magnifier be
 **Capture → Search Headers and Bodies**) to extend it to headers and textual bodies. That
 builds an index over what is captured, so it is off by default.
 
+## Handing a capture to an agent
+
+**Export for Agent…** (⇧⌘E) writes a folder shaped for investigation rather than archival,
+because a single dump is the wrong shape for it — bodies are the bulk, most are irrelevant to
+any one question, and one big file makes you take all of it to find any of it:
+
+```
+snoopy-export-20260919-141710/
+  README.md          how to read the rest
+  summary.md         24 KB — counts, hosts, failures, slowest, largest, repeats, every row
+  exchanges.jsonl    96 KB — one JSON object per exchange, no bodies; grep- and jq-friendly
+  bodies/            1.9 MB — one file per body, named so the right one opens directly
+```
+
+Those are the real numbers from a 120-request capture. The summary names the body file for
+every row, so the reading order is summary → the two or three bodies it points at — a few KB
+instead of the whole capture. Bodies are capped (64 KB each by default, and a clipped file
+says so), JSON is pretty-printed, and gzipped bodies are decompressed.
+
+**Credentials are redacted by default.** `Authorization`, `Cookie`, `Set-Cookie`, API-key
+headers and query parameters like `token` or `sig` are replaced with their length. Bodies are
+*not* redacted — the export's own README says so rather than implying a guarantee it cannot
+make. Turn it off in **File → Redact Credentials in Exports** if you are keeping the export
+local and need the real values.
+
 ## Sessions
 
 **⌘S** writes the whole capture — bodies, headers, timing, errors and all — to a `.snoopy`
@@ -108,6 +133,21 @@ past 200 children page in on demand, so an array of 20,000 elements opens instan
 400,000 values it falls back to pretty-printed text, still chunked and still lazy, and says
 so. **Save Body** writes the exact decoded bytes to disk when a payload is better read
 elsewhere.
+
+## Updates
+
+Snoopy checks its GitHub releases page for a newer build — at most once a day, never
+blocking, and silently when there is nothing to say. When there is, a strip appears above the
+capture with the version, the download size and the release notes.
+
+**Check for Updates…** in the Snoopy menu asks immediately and always answers, and
+**Check Automatically** turns the background check off.
+
+Downloading is one click; installing is deliberately still yours. Snoopy puts the signed,
+notarized DMG in `~/Downloads` and offers to open it — it does not replace itself in place.
+Swapping a running app bundle out from under itself is the part that goes wrong, and doing it
+safely is what Sparkle exists for; until that is worth adding, the honest version is a
+download and a drag.
 
 ## Build
 

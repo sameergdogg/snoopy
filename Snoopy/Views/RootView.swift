@@ -4,6 +4,7 @@ import SnoopyCore
 struct RootView: View {
     @EnvironmentObject var controller: AppController
     @EnvironmentObject var store: CaptureStore
+    @EnvironmentObject var updates: UpdateController
     @State private var selection: Exchange.ID?
     @FocusState private var filterFocused: Bool
 
@@ -13,6 +14,7 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 340)
         } detail: {
             VStack(spacing: 0) {
+                UpdateBanner()
                 if let notice = controller.notice {
                     NoticeBanner(notice: notice) { controller.notice = nil }
                 }
@@ -21,6 +23,7 @@ struct RootView: View {
                 StatusBar()
             }
             .animation(.easeInOut(duration: 0.15), value: controller.notice)
+            .animation(.easeInOut(duration: 0.2), value: updates.state)
         }
         .toolbar { ToolbarView(filterFocused: $filterFocused) }
         .onReceive(NotificationCenter.default.publisher(for: .snoopyFocusFilter)) { _ in

@@ -37,6 +37,8 @@ struct ToolbarView: ToolbarContent {
                 Button("Open Session…") { controller.openSession() }
                 Divider()
                 Button("Export HAR…") { controller.exportHAR() }
+                Divider()
+                Button("Export for Agent…") { controller.exportForAgent() }
             } label: {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
